@@ -1,12 +1,11 @@
 from torch import Tensor
 import torch
+import torch.nn.functional as F
 from pyproj import Proj
 import time
 
 import copy
 import json
-
-from HypoSVI import realnvpfc_model
 
 from math import *
 
@@ -161,10 +160,10 @@ def IO_JSON2CSV(EVT, savefile=None):
 
 
 # =========== MAIN =======
-class HypoSVI(torch.nn.Module):
+class EikoGMM(torch.nn.Module):
     def __init__(self, EikoNet, Phases=[
-                 'P', 'S'], device='cpu', lr=1, n_samples=150):
-        super(HypoSVI, self).__init__()
+                 'P', 'S'], device='cpu', lr=1, n_clusters=150):
+        super(EikoGMM, self).__init__()
 
         # -- Defining the EikoNet input formats
         self.eikonet_Phases = Phases
@@ -214,7 +213,7 @@ class HypoSVI(torch.nn.Module):
         self.location_info['Travel Time Uncertainty - [Gradient(km/s),Min(s),Max(s)]'] = [0.0, 0.0, 0.0]
         self.location_info['Individual Event Epoch Save and Print Rate'] = [
             None, False]
-        self.location_info['Number of samples'] = n_samples
+        self.location_info['Number of samples'] = n_clusters
         self.location_info['lr'] = lr
         self.location_info['Save every * events'] = 100
         self.location_info['Location Uncertainty Percentile (%)'] = 90.0
@@ -290,7 +289,7 @@ class HypoSVI(torch.nn.Module):
         # Turning back into a std
         self._σ_T = torch.sqrt(self._σ_T)
 
-    def compute_dtimes_obs(self, t_obs, t_obs_err, t_phase, n_samples):
+    def compute_dtimes_obs(self, t_obs, t_obs_err, t_phase, n_clusters):
 
         # Determining the predicted Travel-time for the different phases
         n_obs = 0
@@ -304,8 +303,8 @@ class HypoSVI(torch.nn.Module):
             if len(phase_index) == 0:
                 continue
 
-            pha_T_obs = t_obs[phase_index].repeat(n_samples, 1)
-            pha_T_obs_err = t_obs_err[phase_index].repeat(n_samples, 1)
+            pha_T_obs = t_obs[phase_index].repeat(n_clusters, 1)
+            pha_T_obs_err = t_obs_err[phase_index].repeat(n_clusters, 1)
             if cc == 0:
                 n_obs = len(phase_index)
                 T_obs = pha_T_obs
@@ -321,7 +320,7 @@ class HypoSVI(torch.nn.Module):
 
     def compute_dtimes_syn(self, X_src, X_rec, T_phase):
         # Preparing EikoNet input
-        n_samples = X_src.shape[0]
+        n_clusters = X_src.shape[0]
         cc = 0
         for ind, phase in enumerate(self.eikonet_Phases):
             if phase == 'P':
@@ -333,10 +332,10 @@ class HypoSVI(torch.nn.Module):
                 continue
 
             pha_X_inp = torch.cat([X_src[:,:3].repeat_interleave(
-                len(phase_index), dim=0), X_rec[phase_index, :].repeat(n_samples, 1)], dim=1)
+                len(phase_index), dim=0), X_rec[phase_index, :].repeat(n_clusters, 1)], dim=1)
             pha_T_pred = self.eikonet_models[ind].TravelTimes(
                 pha_X_inp, projection=False).reshape(
-                n_samples, len(phase_index))
+                n_clusters, len(phase_index))
 
             pha_T_pred += X_src[:,3].unsqueeze(1)
             if cc == 0:
@@ -504,12 +503,12 @@ class HypoSVI(torch.nn.Module):
         else:
             picks_df.to_csv(savefile, index=False)
 
-    def train(self, T_obs, X_rec, T_obs_phase, generator, epochs, patience, early_stopping, n_samples):
+    def train(self, T_obs, X_rec, T_obs_phase, generator, epochs, patience, early_stopping, n_clusters):
         losses = []
         optimizer = torch.optim.Adam(generator.parameters(), lr = self.location_info['lr'])
         for epoch in range(epochs):
 
-            x_samples_transformed, logdet = generator.reverse(torch.randn((n_samples, 4), device=self.device))
+            x_samples_transformed, logdet = generator.reverse(torch.randn((n_clusters, 4), device=self.device))
 
             #X_src = torch.sigmoid(x_samples_transformed)
             X_src = x_samples_transformed
@@ -545,27 +544,55 @@ class HypoSVI(torch.nn.Module):
                     break
         return losses, resid
 
-    def MAP(self, T_obs, X_rec, T_obs_phase, epochs, patience, early_stopping):
+    def laplace_pdf(self, x, b):
+        return torch.exp(-torch.abs(x)/b) / (2*b)
+
+    def uniform_pdf(self, x, a, b):
+        # return torch.where((x >= a) & (x <= b), float(1.0 / (b-a)), float(0.0))
+        return torch.zeros(x.shape, device=self.device)
+
+    def MAP(self, K, T_obs, X_rec, T_obs_phase, epochs, patience, early_stopping):
         losses = []
-        X_src = torch.zeros(1, 4, device=self.device)
-        X_src[0,:3] = self.xmin.clone()
+        T0 = T_obs.min()
+        T1 = T_obs.max()
+        N = T_obs.shape[1]
+        X_src = torch.zeros(K, 4, device=self.device)
+        for i in range(3):
+            X_src[:,i] = (self.xmax[i] - self.xmin[i])*torch.rand(K, device=self.device) + self.xmin[i]
+        X_src[:,3] = (T1-T0) * torch.rand(K, device=self.device) + T0
         X_src = X_src.requires_grad_()
-        optimizer = torch.optim.Adam([X_src], lr = self.location_info['lr'])
         best_src = None
         best_loss = 99999999.
+        logit_phi = torch.zeros(K, device=self.device).requires_grad_()
+        logit_w = torch.zeros(N, device=self.device).requires_grad_()
+        logit_gamma = torch.zeros(K, N, device=self.device).requires_grad_()
+        optimizer = torch.optim.Adam([X_src, logit_phi, logit_w, logit_gamma], lr = self.location_info['lr'])
+
         for epoch in range(epochs):
             optimizer.zero_grad()
+            # T_syn is [K, N]
             T_syn = self.compute_dtimes_syn(X_src, X_rec, T_obs_phase)
-            #loss = self.loss(T_obs, T_syn)
-            loss = -self.log_L.log_prob(T_obs-T_syn).sum()
+            
+            phi = F.softmax(logit_phi, -1)
+            w = torch.sigmoid(logit_w)
+            gamma = F.softmax(logit_gamma, dim=0)
+
+            p_x_G = (gamma * phi[:,None] * self.laplace_pdf(T_obs-T_syn, 0.3)).sum(0)
+            l_reg = 
+            loss = -torch.log((1-w) * self.uniform_pdf(T_obs, T0, T1) + w * p_x_G).sum()
+
             losses += [loss.item()]
 
             loss.backward()
+            # print()
+            # print(logit_w.grad)
+            # print(w)
             optimizer.step()
 
             if (epoch + 1) % 30 == 0:
                 with torch.no_grad():
-                    print(f"epoch: {epoch:}, loss: {loss.item():.5f}", "{}".format(X_src.mean(dim=0)))
+                    print(f"epoch: {epoch:}, loss: {loss.item():.5f}")
+                    print(gamma.sum(1))
 
             if losses[-1] < best_loss:
                 best_loss = losses[-1]
@@ -633,8 +660,6 @@ class HypoSVI(torch.nn.Module):
             pick_info = pd.merge(
                 Ev['Picks'], Stations[['Network', 'Station', 'X', 'Y', 'Z']])
             Ev['Picks'] = pick_info[['Network', 'Station', 'X', 'Y', 'Z', 'PhasePick', 'DT', 'PickError']]
-            if pick_info.shape[0] != Ev['Picks'].shape:
-                print("WARNING: One or more picks is missing from station file. Dropped during df merge.")
 
             # Defining the arrivals times in seconds
             pick_info['Seconds'] = (pick_info['DT'] - np.min(pick_info['DT'])).dt.total_seconds()
@@ -651,8 +676,8 @@ class HypoSVI(torch.nn.Module):
             T_obs_phase = [0 if x == 'P' else 1 for x in pick_info['PhasePick']]
             T_obs_phase = torch.tensor(T_obs_phase).to(self.device)
 
-            n_samples = int(self.location_info['Number of samples'])
-            T_obs = self.compute_dtimes_obs(T_obs, T_obs_err, T_obs_phase, n_samples)
+            n_clusters = int(self.location_info['Number of samples'])
+            T_obs = self.compute_dtimes_obs(T_obs, T_obs_err, T_obs_phase, n_clusters)
 
             if self.location_info['Likelihood'] == 'Normal':
                 self.log_L = torch.distributions.Normal(torch.zeros(T_obs.shape[1], device=self.device), self._σ_T)
@@ -671,16 +696,10 @@ class HypoSVI(torch.nn.Module):
                 self.log_L = None
                 self.loss = None
 
-            if n_samples > 1:
-                generator = realnvpfc_model.RealNVP(4, n_flow=n_flow, affine=True, seqfrac=seqfrac, batch_norm=False).to(self.device)
-                losses, resid = self.train(T_obs, X_rec, T_obs_phase, generator, epochs, patience,
-                                    early_stopping, n_samples)
-                x_samples_transformed, _ = generator.reverse(torch.randn((1000, 4)).to(self.device))
-                X_src = x_samples_transformed
-                X_src[:,:3] = torch.sigmoid(X_src[:,:3])
-                X_src[:,:3] = X_src[:,:3] * (self.xmax - self.xmin) + self.xmin
-            else:
-                losses, X_src, resid = self.MAP(T_obs, X_rec, T_obs_phase, epochs, patience, early_stopping)
+            losses, X_src, resid = self.MAP(n_clusters, T_obs, X_rec, T_obs_phase, epochs, patience, early_stopping)
+
+            # return
+            continue
 
             Ev['location'] = {}
             Ev['location']['SVGD_points'] = X_src.detach().cpu().numpy().tolist()
