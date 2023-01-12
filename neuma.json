@@ -1,5 +1,4 @@
 {
-"phase_file": "misc/catalog_neuma.csv",
 "station_file": "misc/scsn_stations.csv",
 "velmod_file": "misc/hk77.csv",
 "catalog_outfile": "misc/model.bson",
