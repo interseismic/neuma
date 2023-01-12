@@ -1,0 +1,13 @@
+{
+"station_file": "misc/scsn_stations.csv",
+"velmod_file": "misc/hk77.csv",
+"lon_min": -116.70,
+"lon_max": -114.70,
+"lat_min": 32.30,
+"lat_max": 34.30,
+"z_min": -5.0,
+"z_max": 50.0,
+"model_file": "misc/model.bson",
+"n_epochs": 200,
+"lr": 1e-3
+}
