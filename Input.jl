@@ -1,6 +1,30 @@
 using Dates
 using JSON
 
+function hypoDDtoDataFrame(fname)
+    println("Begin read lines")
+    lines = readlines(fname)
+    println("Done reading lines, building df")
+    evid1 = nothing
+    evid2 = nothing
+    dtimes = DataFrame(network=String[], station=String[], dt=Float32[], cc=Float32[], evid1=String[], evid2=String[], phase=String[])
+    for line in lines
+        strings = split(line)
+        if strings[1] == "#"
+            evid1 = strings[2]
+            evid2 = strings[3]
+        else
+            try
+                push!(dtimes, (strings[1], strings[2], parse(Float32, strings[3]), parse(Float32, strings[4]), evid1, evid2, strings[5]))
+            catch
+                println("ERROR: ", strings)
+            end
+        end
+    end
+    println(first(dtimes, 10))
+    CSV.write("dtimes.csv", dtimes)
+end
+
 function convert_gamma_to_hyposvi(fname, outfile)
     picks = CSV.read(fname, DataFrame)
     nets = []
@@ -60,10 +84,10 @@ function read_syn_dataset(params)
 end
 
 function sec2date(s::AbstractFloat)
-    sec_sign = Int32(sign(s))
+    sec_sign = Int(sign(s))
     s = abs(s)
-    sec = Int32(floor(s))
-    msec = Int32(floor(1000*(s - sec)))
+    sec = Int(floor(s))
+    msec = Int(floor(1000*(s - sec)))
     return Dates.Second(sec * sec_sign) + Dates.Millisecond(msec * sec_sign)
 end
 
@@ -73,10 +97,15 @@ struct Origin
     depth::Float32
     time::Dates.DateTime
     mag::Float32
+    unc_h_max::Float32
+    unc_h_min::Float32
     unc_z::Float32
     X::Float32
     Y::Float32
     arids::Vector
+    resid::Vector
+    mags::Vector
+    prob::Vector
 end
 
 function build_eikonet_syn_params()
@@ -91,7 +120,7 @@ function build_eikonet_syn_params()
     params["z_max"] = 50.0
     params["model_file"] = "/home/zross/git/eikonet_julia/eikonet_hk77/model.bson"
     params["n_epochs"] = 200
-    params["lr"] = 1e-3
+    params["lr"] = 1f-3
     return params
 end
 
@@ -110,94 +139,14 @@ function build_hyposvi_params()
     params["model_file"] = "/scratch/zross/oak_ridge/model.bson"
     params["n_epochs"] = 1000
     params["n_particles"] = 1
-    params["lr"] = 1e-3
+    params["lr"] = 1f-3
     params["phase_unc"] = 0.20
     params["verbose"] = true
     params["k-NN"] = 500
-    params["iter_tol"] = 1e-2
+    params["iter_tol"] = 1f-2
     params["max_k-NN_dist"] = 50
     params["n_ssst_iter"] = 3
     params["inversion_method"] = "SVI"
-    return params
-end
-
-function build_neuma_params()
-    params = Dict()
-    params["phase_file"] = "/scratch/zross/oak_ridge/scsn_oak_ridge.csv"
-    params["station_file"] = "/home/zross/git/eikonet_julia/scsn_stations.csv"
-    params["velmod_file"] = "/scratch/zross/oak_ridge/vz_socal.csv"
-    params["catalog_outfile"] = "/scratch/zross/oak_ridge/catalog_svi.csv"
-    params["lon_min"] = -119.8640
-    params["lon_max"] = -117.8640
-    params["lat_min"] = 33.3580
-    params["lat_max"] = 35.3580
-    params["z_min"] = 0.0
-    params["z_max"] = 60.0
-    params["model_file"] = "/scratch/zross/oak_ridge/model.bson"
-    params["n_epochs"] = 500
-    params["n_particles"] = 10
-    params["lr"] = 1e-3
-    params["phase_unc"] = 0.5
-    params["verbose"] = true
-    params["k-NN"] = 500
-    params["iter_tol"] = 1e-2
-    params["max_k-NN_dist"] = 50
-    params["n_ssst_iter"] = 1
-    params["n_det"] = 4
-    params["inversion_method"] = "EM"
-    return params
-end
-
-function build_neuma_syn_params()
-    params = Dict()
-    params["phase_file"] = "/scratch/zross/oak_ridge/scsn_oak_ridge.csv"
-    params["station_file"] = "/home/zross/git/eikonet_julia/scsn_stations.csv"
-    params["velmod_file"] = "/scratch/zross/oak_ridge/vz_socal.csv"
-    params["catalog_outfile"] = "/scratch/zross/oak_ridge/catalog_svi.csv"
-    params["lon_min"] = -118.004
-    params["lon_max"] = -117.004
-    params["lat_min"] = 35.205
-    params["lat_max"] = 36.205
-    params["z_min"] = 0.0
-    params["z_max"] = 60.0
-    params["model_file"] = "/home/zross/git/eikonet_julia/syntest/model.bson"
-    params["n_epochs"] = 200
-    params["n_clusters"] = 10
-    params["lr"] = 1e-3
-    params["phase_unc"] = 0.20
-    params["amp_unc"] = 1.0
-    params["verbose"] = true
-    params["k-NN"] = 500
-    params["iter_tol"] = 1e-5
-    params["n_det"] = 15
-    params["n_warmup_iter"] = 20
-    params["n_iter"] = 10
-    params["huber_delta"] = 0.5
-    return params
-end
-
-function build_neuma_data_params()
-    params = Dict()
-    params["catalog_outfile"] = "/scratch/zross/oak_ridge/catalog_svi.csv"
-    params["station_file"] = "/home/zross/git/eikonet_julia/scsn_stations.csv"
-    params["velmod_file"] = "/home/zross/git/eikonet_julia/eikonet_hk77/hk77.csv"
-    params["lon_min"] = -118.50
-    params["lon_max"] = -116.50
-    params["lat_min"] = 34.8
-    params["lat_max"] = 36.8
-    params["z_min"] = -5.0
-    params["z_max"] = 50.0
-    params["model_file"] = "/home/zross/git/eikonet_julia/eikonet_hk77/model.bson"
-    params["n_epochs"] = 300
-    params["n_warmup_iter"] = 30
-    params["n_iter"] = 30
-    params["lr"] = 1e-3
-    params["phase_unc"] = 0.35
-    params["amp_unc"] = 1.0
-    params["verbose"] = true
-    params["iter_tol"] = 1e-5
-    params["n_det"] = 10
-    params["huber_delta"] = 0.5
     return params
 end
 
@@ -218,14 +167,15 @@ function fwd_transform!(X::Array, origin::Geodesy.LLA)
 end
 
 struct MinmaxScaler
-    min::Float32
+    min::Vector{Float32}
     scale::Float32
 end
 
 function fit(X::AbstractArray, ::Type{MinmaxScaler})
-    mins = minimum(X[1:6,:])
-    maxs = maximum(X[1:6,:])
-    return MinmaxScaler(mins, maxs-mins)
+    mins = vec(minimum(X[1:6,:], dims=2))
+    maxs = vec(maximum(X[1:6,:], dims=2))
+    scale = maxs - mins
+    return MinmaxScaler(mins, maximum(scale))
 end
 
 function forward!(X::AbstractArray, scaler::MinmaxScaler)
@@ -233,8 +183,14 @@ function forward!(X::AbstractArray, scaler::MinmaxScaler)
 end
 
 function forward(X::AbstractArray, scaler::MinmaxScaler)
-    X_new = (X[1:6,:] .- scaler.min) ./ scaler.scale
-    return cat(X_new, reshape(X[7,:], 1, :), dims=1)
+    if ndims(X) == 2
+        X_new = (X[1:6,:] .- scaler.min) ./ scaler.scale
+        X_new_ = cat(X_new, X[7:7,:], dims=1)
+    elseif ndims(X) == 3
+        X_new = (X[1:6,:,:] .- scaler.min) ./ scaler.scale
+        X_new_ = cat(X_new, X[7:7,:,:], dims=1)        
+    end
+    return X_new_
 end
 
 function forward_point(X::AbstractArray, scaler::MinmaxScaler)
@@ -250,8 +206,22 @@ function inverse!(Y::AbstractArray, scaler::MinmaxScaler)
 end
 
 function inverse(Y::AbstractArray, scaler::MinmaxScaler)
-    Y_new = (Y[1:6,:] .* scaler.scale) .+ scaler.min
-    return cat(Y_new, reshape(Y[7,:], 1, :), dims=1)
+    if ndims(Y) == 2
+        if size(Y, 1) == 7
+            Y_new = Y[1:6,:] .* scaler.scale .+ scaler.min
+            Y_new_ = cat(Y_new, Y[7:7,:], dims=1)
+        else
+            Y_new_ = Y[1:3,:] .* scaler.scale[1:3] .+ scaler.min[1:3]
+        end
+    elseif ndims(Y) == 3
+        if size(Y, 1) == 7
+            Y_new = Y[1:6,:,:] .* scaler.scale .+ scaler.min
+            Y_new_ = cat(Y_new, Y[7:7,:,:], dims=1)
+        else
+            Y_new_ = Y[1:3,:,:] .* scaler.scale[1:3] .+ scaler.min[1:3]
+        end
+    end
+    return Y_new_
 end
 
 function get_stations(params)
@@ -288,6 +258,7 @@ function data_scaler(params)
     trans = ENUfromLLA(origin, wgs84)
     min_enu = trans(min_lla)
     max_enu = trans(max_lla)
+
     x[1,1] = min_enu.e
     x[2,1] = min_enu.n
     x[3,1] = params["z_min"] * 1f3
@@ -304,6 +275,7 @@ function data_scaler(params)
     x[6,2] = params["z_max"] * 1f3
     x[7,2] = 1f0
 
+    x[1:6,:] ./= 1f3
     scaler = fit(x, MinmaxScaler)
     return scaler
 end
@@ -313,7 +285,31 @@ function timedelta(t1::DateTime, t2::DateTime)
     (t1-t2) / Millisecond(1000)
 end
 
-function format_arrivals(phases::DataFrame, stations::DataFrame)
+function init_X(params::Dict, X_phase::Array{Float32})
+    rng = MersenneTwister(1234)
+    K = params["n_particles"]
+    n_obs = size(X_phase, 1)
+    origin = LLA(lat=params["lat_min"], lon=params["lon_min"])
+    trans = ENUfromLLA(origin, wgs84)
+
+    X_src = zeros(Float32, 3, n_obs, K)
+    for i in 1:K
+        lat1 = rand(rng, Uniform(params["lat_min"], params["lat_max"]))
+        lon1 = rand(rng, Uniform(params["lon_min"], params["lon_max"]))
+        z1 = rand(rng, Uniform(params["z_min"], params["z_max"]))
+        point_enu = trans(LLA(lat=lat1, lon=lon1))
+        X_src[1,:,i] .= point_enu.e
+        X_src[2,:,i] .= point_enu.n
+        X_src[3,:,i] .= z1*1f3
+    end
+    X_phase = reshape(X_phase', 4, n_obs, 1)
+    X_phase = repeat(X_phase, 1, 1, K)
+    X = cat(X_src, X_phase, dims=1)
+    X[1:6,:,:] ./= 1f3
+    return X
+end
+
+function format_arrivals(params::Dict, phases::DataFrame, stations::DataFrame)
     phase_sta = innerjoin(phases, stations, on = [:network, :station])
     X_inp = zeros(Float32, size(phase_sta, 1), 4)
     X_inp[:,1] .= phase_sta.X
@@ -328,9 +324,9 @@ function format_arrivals(phases::DataFrame, stations::DataFrame)
     amp_obs = zeros(Float32, size(T_obs))
     for (i, row) in enumerate(eachrow(phase_sta))
         if row.phase == "P"
-            X_inp[i,4] = 0
+            X_inp[i,4] = 0f0
         elseif row.phase == "S"
-            X_inp[i,4] = 1
+            X_inp[i,4] = 1f0
         else
             println("Error: unknown Phase label (not P or S). Exiting...")
             println(row)
@@ -342,8 +338,13 @@ function format_arrivals(phases::DataFrame, stations::DataFrame)
     end
     T_ref = minimum(arrival_times)
     if amp_included
-        return X_inp, T_obs, amp_obs, T_ref, phase_sta
+        X = init_X(params, X_inp, minimum(T_obs)-Float32(10.0), maximum(T_obs); rand_init=params["init_random"])
+        K = params["n_clusters"]
+        y_obs = cat(T_obs', amp_obs', dims=2)
+        y_obs = repeat(y_obs, 1, 1, K)
+        return X, y_obs, T_ref, phase_sta
     else
-        return X_inp, T_obs, T_ref, phase_sta
+        X = init_X(params, X_inp)
+        return X, T_obs, T_ref, phase_sta
     end
 end
